@@ -1,0 +1,270 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "AWS CloudFormation Sample to install WordPress. A slightly modified version from the one on AWS site.",
+	"Parameters": {
+		"KeyName": {
+			"Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+			"Type": "AWS::EC2::KeyPair::KeyName",
+			"Default": "awolde",
+			"ConstraintDescription": "must be the name of an existing EC2 KeyPair."
+		},
+		"AMIid": {
+			"Description": "Which image to use to create the instances",
+			"Type": "String",
+			"Default": "ami-89c3049f",
+			"ConstraintDescription": "must be a valid ami id"
+		},
+
+		"InstanceType": {
+			"Description": "WebServer EC2 instance type",
+			"Type": "String",
+			"Default": "t2.small",
+			"AllowedValues": ["t2.micro", "t2.small"],
+			"ConstraintDescription": "must be a valid EC2 instance type."
+		},
+
+		"SSHLocation": {
+			"Description": "The IP address range that can be used to SSH to the EC2 instances",
+			"Type": "String",
+			"MinLength": "9",
+			"MaxLength": "18",
+			"Default": "0.0.0.0/0",
+			"AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+			"ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+		},
+
+		"DBClass": {
+			"Description": "Database instance class",
+			"Type": "String",
+			"Default": "db.t2.small",
+			"AllowedValues": ["db.t2.micro", "db.t2.small"],
+			"ConstraintDescription": "must select a valid database instance type."
+		},
+
+		"DBName": {
+			"Default": "wordpressdb",
+			"Description": "The WordPress database name",
+			"Type": "String",
+			"MinLength": "1",
+			"MaxLength": "64",
+			"AllowedPattern": "[a-zA-Z][a-zA-Z0-9]*",
+			"ConstraintDescription": "must begin with a letter and contain only alphanumeric characters."
+		},
+
+		"DBUser": {
+			"Default": "wpadmin",
+			"Description": "The WordPress database admin account username",
+			"Type": "String",
+			"MinLength": "1",
+			"MaxLength": "16",
+			"AllowedPattern": "[a-zA-Z][a-zA-Z0-9]*",
+			"ConstraintDescription": "must begin with a letter and contain only alphanumeric characters."
+		},
+
+		"DBPassword": {
+			"NoEcho": "true",
+			"Description": "The WordPress database admin account password",
+			"Type": "String",
+			"MinLength": "8",
+			"MaxLength": "41",
+			"AllowedPattern": "[a-zA-Z0-9]*",
+			"ConstraintDescription": "must contain only alphanumeric characters."
+		},
+
+		"MultiAZDatabase": {
+			"Default": "false",
+			"Description": "Create a Multi-AZ MySQL Amazon RDS database instance",
+			"Type": "String",
+			"AllowedValues": ["true", "false"],
+			"ConstraintDescription": "must be either true or false."
+		},
+
+		"WebServerCapacity": {
+			"Default": "1",
+			"Description": "The initial number of WebServer instances",
+			"Type": "Number",
+			"MinValue": "1",
+			"MaxValue": "5",
+			"ConstraintDescription": "must be between 1 and 5 EC2 instances."
+		},
+
+		"DBAllocatedStorage": {
+			"Default": "5",
+			"Description": "The size of the database (Gb)",
+			"Type": "Number",
+			"MinValue": "5",
+			"MaxValue": "1024",
+			"ConstraintDescription": "must be between 5 and 1024Gb."
+		}
+	},
+
+	"Resources": {
+
+		"ElasticLoadBalancer": {
+			"Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+			"Properties": {
+				"AvailabilityZones": {
+					"Fn::GetAZs": ""
+				},
+				"CrossZone": "true",
+				"LBCookieStickinessPolicy": [{
+					"PolicyName": "CookieBasedPolicy",
+					"CookieExpirationPeriod": "30"
+				}],
+				"Listeners": [{
+					"LoadBalancerPort": "80",
+					"InstancePort": "80",
+					"Protocol": "HTTP",
+					"PolicyNames": ["CookieBasedPolicy"]
+				}],
+				"HealthCheck": {
+					"Target": "HTTP:80/wp-admin/setup-config.php",
+					"HealthyThreshold": "2",
+					"UnhealthyThreshold": "5",
+					"Interval": "10",
+					"Timeout": "5"
+				}
+			}
+		},
+
+		"WebServerSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enable HTTP access via port 80 locked down to the load balancer + SSH access",
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "80",
+					"ToPort": "80",
+					"SourceSecurityGroupOwnerId": {
+						"Fn::GetAtt": ["ElasticLoadBalancer", "SourceSecurityGroup.OwnerAlias"]
+					},
+					"SourceSecurityGroupName": {
+						"Fn::GetAtt": ["ElasticLoadBalancer", "SourceSecurityGroup.GroupName"]
+					}
+				}, {
+					"IpProtocol": "tcp",
+					"FromPort": "22",
+					"ToPort": "22",
+					"CidrIp": {
+						"Ref": "SSHLocation"
+					}
+				}]
+			}
+		},
+
+		"WebServerGroup": {
+			"Type": "AWS::AutoScaling::AutoScalingGroup",
+			"Properties": {
+				"AvailabilityZones": {
+					"Fn::GetAZs": ""
+				},
+				"LaunchConfigurationName": {
+					"Ref": "LaunchConfig"
+				},
+				"MinSize": "1",
+				"MaxSize": "5",
+				"DesiredCapacity": {
+					"Ref": "WebServerCapacity"
+				},
+				"LoadBalancerNames": [{
+					"Ref": "ElasticLoadBalancer"
+				}]
+			},
+			"CreationPolicy": {
+				"ResourceSignal": {
+					"Timeout": "PT15M"
+				}
+			},
+			"UpdatePolicy": {
+				"AutoScalingRollingUpdate": {
+					"MinInstancesInService": "1",
+					"MaxBatchSize": "1",
+					"PauseTime": "PT15M",
+					"WaitOnResourceSignals": "true"
+				}
+			}
+		},
+
+		"LaunchConfig": {
+			"Type": "AWS::AutoScaling::LaunchConfiguration",
+			"Properties": {
+				"ImageId": {
+					"Ref": "AMIid"
+				},
+				"InstanceType": {
+					"Ref": "InstanceType"
+				},
+				"SecurityGroups": [{
+					"Ref": "WebServerSecurityGroup"
+				}],
+				"KeyName": {
+					"Ref": "KeyName"
+				},
+				"UserData": {
+					"Fn::Base64": {
+						"Fn::Join": ["", [
+							"#!/bin/bash -xe\n",
+							"sed -i \"s/'database_name_here'/'", {
+								"Ref": "DBName"
+							}, "'/g\" /var/www/html/wp-config.php\n",
+							"sed -i \"s/'username_here'/'", {
+								"Ref": "DBUser"
+							}, "'/g\" /var/www/html/wp-config.php\n",
+							"sed -i \"s/'password_here'/'", {
+								"Ref": "DBPassword"
+							}, "'/g\" /var/www/html/wp-config.php\n",
+							"sed -i \"s/'localhost'/'", {
+								"Fn::GetAtt": ["DBInstance", "Endpoint.Address"]
+							}, "'/g\" /var/www/html/wp-config.php\n"
+						]]
+					}
+
+				}
+			}
+		},
+
+		"DBEC2SecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Open database for access",
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "3306",
+					"ToPort": "3306",
+					"SourceSecurityGroupName": {
+						"Ref": "WebServerSecurityGroup"
+					}
+				}]
+			}
+		},
+
+		"DBInstance": {
+			"Type": "AWS::RDS::DBInstance",
+			"Properties": {
+				"DBName": {
+					"Ref": "DBName"
+				},
+				"Engine": "MySQL",
+				"MultiAZ": {
+					"Ref": "MultiAZDatabase"
+				},
+				"MasterUsername": {
+					"Ref": "DBUser"
+				},
+				"MasterUserPassword": {
+					"Ref": "DBPassword"
+				},
+				"DBInstanceClass": {
+					"Ref": "DBClass"
+				},
+				"AllocatedStorage": {
+					"Ref": "DBAllocatedStorage"
+				},
+				"VPCSecurityGroups": [{
+					"Ref": "DBEC2SecurityGroup"
+				}]
+			}
+		}
+
+	}
+}
