@@ -260,9 +260,8 @@
 				"AllocatedStorage": {
 					"Ref": "DBAllocatedStorage"
 				},
-				"VPCSecurityGroups": [{
-					"Ref": "DBEC2SecurityGroup"
-				}]
+				"VPCSecurityGroups":
+					[ { "Fn::GetAtt": [ "DBEC2SecurityGroup", "GroupId" ]	}]
 			}
 		}
 
